@@ -162,10 +162,13 @@ void send_arp_reply_loop(const char* dev, Mac my_mac, Ip target_ip, Mac sender_m
 
     time_t start_time = time(nullptr);
     while (true) {
-        if (difftime(time(nullptr), start_time) > 5) {
-            send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
-            start_time = time(nullptr);
-        }
+        // if (difftime(time(nullptr), start_time) > 5) {
+        //     send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+        //     start_time = time(nullptr);
+        // }
+
+        send_arp_reply(handle, my_mac, target_ip, sender_mac, sender_ip);
+
     }
 
     pcap_close(handle);
@@ -298,7 +301,7 @@ int main(int argc, char* argv[]) {
             Ip sender_ip = ip_hdr->sip();
             Ip target_ip = ip_hdr->dip();
 
-            // printf("Sender IP: %s, Target IP: %s\n", std::string(sender_ip).c_str(), std::string(target_ip).c_str());
+            printf("Sender IP: %s, Target IP: %s\n", std::string(sender_ip).c_str(), std::string(target_ip).c_str());
 
             // Check if we know the MAC address of the sender
             auto sender_it = sender_ip_mac_map.find(sender_ip);
